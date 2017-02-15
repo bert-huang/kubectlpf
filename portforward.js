@@ -46,7 +46,7 @@ function timeLog (line) {
 let restartAttempt = 0;
 
 function getPods(callback) {
-    exec(`kubectl get pods${ kubeConfig ? ' --kubeconfig=' + kubeConfig : ''}${ namespace ? ' --namespace='+namespace : ''}`, function(error, stdout, stderr){
+    exec(`kubectl get pods${ kubeConfig ? ' --kubeconfig ' + kubeConfig : ''}${ namespace ? ' --namespace '+namespace : ''}`, function(error, stdout, stderr){
         if (error) {
 			if (stderr.match(/network is unreachable/) || stderr.match(/handshake timeout/) || stderr.match(/network is down/) || stderr.match(/i\/o timeout/)) {
 				timeLog(`Network error, restarting (${restartAttempt})...`);
@@ -198,15 +198,31 @@ try {
 	let podsToForward = [];
 	let healthInterval = 5000;
 
+	let snarf = null;
+
 	args.forEach(arg => {
-		if (arg.match(/--kubeconfig=[^\s]*?/)) {
+		if (snarf) { // next argument belongs to this function
+			snarf(arg);
+			snarf = null;
+		} else if (arg.match(/--kubeconfig=[^\s]*?/)) {
 			kubeConfig = arg.split('=')[1];
+		} else if (arg === '--kubeconfig') {
+			snarf = function(kc) { kubeConfig = kc };
 		} else if (arg.match(/--namespace=[a-zA-z]*?/)) {
 			namespace = arg.split('=')[1];
+		} else if (arg === '--namespace') {
+			snarf = function(ns) { namespace = ns; };
 		} else if (arg.match(/--exclude=(?:[\-a-zA-Z]*,?)*/)) {
 			podsToExclude = arg.split('=')[1].split(',').map((pod) => pod.trim());
 		} else if (arg.match(/--health-interval=[\d]*?/)) {
 			healthInterval = arg.split('=')[1];
+		} else if (arg === '--help' || arg === '-help' || arg === '?' || arg == 'help') {
+			console.log( 'kubectlpf:' +
+`
+--kubeconfig config-file - override using ~/.kube/config
+--namespace namespace - override the namespace in the kubernetes config file
+--exclude=pods - comma separated values of pods to exclude from forwarding
+--health-interval=ms - ms time interval between health check, e.g. 5000 is 5 seconds (default)`)
 		} else {
 			podsToForward.push(arg);
 		}
