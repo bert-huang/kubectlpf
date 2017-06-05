@@ -72,11 +72,20 @@ function getPods(callback) {
 }
 
 function getPodId(rawPods, podName, silent){
-    const match = (new RegExp('('+podName+'[-\\da-z]*).*(Running)', 'g')).exec(rawPods);
+	const lines = rawPods.split('\n');
+
+	const filterPods = [];
+	for(let count = 0; count < lines.length; count ++) {
+		if (lines[count].startsWith(podName)) {
+			filterPods.push(lines[count]);
+		}
+	}
+	const joined = filterPods.join('\n');
+    const match = (new RegExp('('+podName+'[-\\da-z]*).*(Running)', 'g')).exec(joined);
     if (match) {
         return match[1];
     } else {
-        const errorMatch = (new RegExp('('+podName+'[-\\da-z]*)[\\s]*[\\d]\\/[\\d][\\s]*([a-zA-Z]*)[\\s]', 'g')).exec(rawPods);
+        const errorMatch = (new RegExp('('+podName+'[-\\da-z]*)[\\s]*[\\d]\\/[\\d][\\s]*([a-zA-Z]*)[\\s]', 'g')).exec(joined);
         if (errorMatch) {
 			if (silent) {
 				return false;
@@ -87,7 +96,7 @@ function getPodId(rawPods, podName, silent){
 			if (silent) {
 				return false;
 			} else {
-				throw `Could not find pod ${chalk.cyan(podName)}, available pods${ namespace ? ' (namespace: '+namespace+')' : ''}: \n${rawPods}`;
+				throw `Could not find pod ${chalk.cyan(podName)}, available pods${ namespace ? ' (namespace: '+namespace+')' : ''}: \n${joined}`;
 			}
         }
     }
