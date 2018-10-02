@@ -40,35 +40,6 @@ catch (e) {
 
 _.merge(systemDefinedPods, localDefinedPods);
 
-// turn all formats into this format
-function standardiseConfig(pods) {
-	const toDelete = [];
-
-	for (svc of pods) {
-		if (!_.isObject(pods[svc])) {
-			const port = pods[svc];
-			pods[svc] = {
-				from: port,
-				to: port,
-				namespace: namespace
-			}
-		} else if (pods[svc].to) {
-			pods[svc].from = pods[svc].from || pods[svc].to;
-			pods[svc].namespace = pods[svc].namespace || namespace;
-		} else {
-			toDelete.push(svc);
-		}
-	}
-
-	if (toDelete.length > 0) {
-		console.log('Ignoring pods ', toDelete, 'they are incorrectly configured.');
-		_(toDelete).each((svc) => {
-			delete pods[svc];
-		})
-	}
-}
-
-
 function timeLog(line) {
 	console.log(`[${chalk.grey(timestamp('HH:mm:ss'))}] ${line}`);
 }
@@ -133,7 +104,9 @@ function getPodId(rawPods, podName, silent) {
 }
 
 function portForwardPod(pod) {
-	const child = exec(`kubectl port-forward ${pod.id} ${pod.from}${pod.to ? ':' + pod.to}${ kubeConfig ? ' --kubeconfig=' + kubeConfig : ''}${ pod.namespace ? ' --namespace=' + pod.namespace : ''}`);
+	const execMethod = `kubectl port-forward ${pod.id} ${pod.from}${pod.to ? ':' + pod.to : ''}${ kubeConfig ? ' --kubeconfig=' + kubeConfig : ''}${ pod.namespace ? ' --namespace=' + pod.namespace : ''}`;
+	console.log(execMethod);
+	const child = exec(execMethod);
 
 	child.stdout.on('data', function (data) {
 		processKubectlLog(data, pod, child);
@@ -198,7 +171,7 @@ function processKubectlLog(logLine, pod, child) {
 	if (logLine.match(/Forwarding from/)) {
 		if (!pod.initialized) {
 			pod.initialized = true;
-			timeLog(`Started port forwarding for ${chalk.cyan(pod.name)} on port ${chalk.magenta(pod.port)}`);
+			timeLog(`Started port forwarding for ${chalk.cyan(pod.name)} on port ${chalk.magenta(pod.from)}:${chalk.magenta(pod.to)}`);
 		}
 	} else if (logLine.match(/Handling connection/)) {
 		timeLog(`Processing request for ${chalk.cyan(pod.name)}`);
@@ -217,12 +190,12 @@ function processKubectlLog(logLine, pod, child) {
 			}
 		}
 	} else if (logLine.match(/bind: permission denied/)) {
-		timeLog(chalk.red(`Permission denied to bind ${chalk.cyan(pod.name)} on port ${chalk.magenta(pod.port)}`));
+		timeLog(chalk.red(`Permission denied to bind ${chalk.cyan(pod.name)} on port ${chalk.magenta(pod.from)}:${chalk.magenta(pod.to)}`));
 		process.exit(0);
 	} else {
 		if (!pod.initialized) {
 			// must be true error message
-			timeLog(chalk.red(`Failed to initialize port forwarding for ${chalk.cyan(pod.name)} on port ${chalk.magenta(pod.port)}: \n`));
+			timeLog(chalk.red(`Failed to initialize port forwarding for ${chalk.cyan(pod.name)} on port ${chalk.magenta(pod.from)}:${chalk.magenta(pod.to)}: \n`));
 			console.log(logLine);
 			process.exit();
 		} else {
@@ -299,21 +272,35 @@ try {
 
 	const getPodMeta = (podName) => {
 		let podPort;
+		let destPort;
 		let fullPodName;
 		const split = podName.split(':');
 		if (split.length > 1) {
 			fullPodName = split[0];
 			podPort = split[1];
+			if (split.length === 3) {
+				destPort = split[2];
+			} else {
+				destPort = podPort;
+			}
 		} else {
 			fullPodName = getPodName(podName);
 			if (!fullPodName) {
 				throw `Please specify port for ${chalk.cyan(podName)}`;
 			}
 			podPort = systemDefinedPods[fullPodName];
+			if (podPort.to) {
+				destPort = podPort.to;
+				podPort = podPort.from;
+			} else {
+				destPort = podPort;
+			}
 		}
 		return {
 			name: fullPodName,
-			port: podPort
+			from: podPort,
+			to: destPort,
+			namespace: namespace
 		}
 	};
 
@@ -334,7 +321,7 @@ try {
 		runningPods.push(podMeta);
 	});
 
-	if (runningPods.length == 0) {
+	if (runningPods.length === 0) {
 		throw 'No pod names provided';
 	}
 
