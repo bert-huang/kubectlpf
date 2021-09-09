@@ -3,6 +3,7 @@
 'use strict';
 
 const exec = require('child_process').exec;
+const spawn = require('child_process').spawn;
 const fs = require('fs');
 const chalk = require('chalk');
 const timestamp = require('time-stamp');
@@ -47,7 +48,17 @@ function timeLog(line) {
 let restartAttempt = 0;
 
 function getPods(callback) {
-	exec(`kubectl get pods${ kubeConfig ? ' --kubeconfig ' + kubeConfig : ''}${ namespace ? ' --namespace ' + namespace : ''}`, function (error, stdout, stderr) {
+	const command = ['kubectl', 'get', 'pods'];
+	if (kubeConfig) {
+		command.push("--kubeconfig");
+		command.push(kubeConfig);
+	}
+	if (namespace) {
+		command.push("--namespace");
+		command.push(namespace);
+	}
+
+	exec(command.join(" "), function (error, stdout, stderr) {
 		if (error) {
 			if (stderr.match(/network is unreachable/) || stderr.match(/handshake timeout/) || stderr.match(/network is down/) || stderr.match(/i\/o timeout/)) {
 				timeLog(`Network error, restarting (${restartAttempt})...`);
@@ -104,18 +115,35 @@ function getPodId(rawPods, podName, silent) {
 }
 
 function portForwardPod(pod) {
-	const execMethod = `kubectl port-forward ${pod.id} ${pod.from}${pod.to ? ':' + pod.to : ''}${ kubeConfig ? ' --kubeconfig=' + kubeConfig : ''}${ pod.namespace ? ' --namespace=' + pod.namespace : ''}`;
-	console.log(execMethod);
-	const child = exec(execMethod);
+	const args = [ 'port-forward', pod.id ];
+	if (pod.to) {
+		args.push(`${pod.from}:${pod.to}`);
+	} else {
+		args.push(pod.from);
+	}
+	if (kubeConfig) {
+		args.push("--kubeconfig")
+		args.push(kubeConfig);
+	}
+	if (pod.namespace) {
+		args.push("--namespace")
+		args.push(pod.namespace);
+	}
 
-	child.stdout.on('data', function (data) {
-		processKubectlLog(data, pod, child);
+	const command = `kubectl ${args.join(" ")}`;
+	timeLog(chalk.grey(command))
+	const child = spawn("kubectl", args);
+
+	child.stdout.on('data', (data) => {
+		processKubectlLog(data.toString(), pod, child);
 	});
-	child.stderr.on('data', function (data) {
-		processKubectlLog(data, pod, child);
+	child.stderr.on('data', (data) => {
+		processKubectlLog(data.toString(), pod, child);
 	});
-	child.on('close', function (code) {
-		//nothing for now
+	child.on('close', (code, signal) => {
+		timeLog(chalk.red(`[${pod.childProcess.pid}] Port forwarding for ${chalk.cyan(pod.name)} ended (${signal})`));
+		pod.restartingState = false;
+		pod.initialized = false;
 	});
 
 	pod.childProcess = child;
@@ -144,7 +172,6 @@ function healthCheck() {
 							if (podId) {
 								pod.id = podId;
 								portForwardPod(pod);
-								pod.restartingState = false;
 							} else {
 								if (attempt >= maxAttempt) {
 									timeLog(chalk.red(`Failed to resume forwarding for ${chalk.cyan(pod.name)}`));
@@ -171,7 +198,7 @@ function processKubectlLog(logLine, pod, child) {
 	if (logLine.match(/Forwarding from/)) {
 		if (!pod.initialized) {
 			pod.initialized = true;
-			timeLog(`Started port forwarding for ${chalk.cyan(pod.name)} on port ${chalk.magenta(pod.from)}:${chalk.magenta(pod.to)}`);
+			timeLog(`[${child.pid}] ${chalk.green("Started")} port forwarding for ${chalk.cyan(pod.name)} on port ${chalk.magenta(pod.from)}:${chalk.magenta(pod.to)}`);
 		}
 	} else if (logLine.match(/Handling connection/)) {
 		timeLog(`Processing request for ${chalk.cyan(pod.name)}`);
@@ -181,7 +208,7 @@ function processKubectlLog(logLine, pod, child) {
 	} else if (logLine.match(/address already in use/) || logLine.match(/Unable to listen on any of the requested ports/)) {
 		if (!pod.excluded) {
 			pod.excluded = true;
-			pod.childProcess.kill();
+			child.kill();
 			timeLog(`Pod ${chalk.cyan(pod.name)} seems to be already forwarded, excluding...`);
 			_.pull(runningPods, pod);
 			if (!runningPods.length) {
@@ -205,6 +232,7 @@ function processKubectlLog(logLine, pod, child) {
 }
 
 try {
+	timeLog(`Process PID: [${process.pid}]`);
 	const args = process.argv.slice(2);
 	let podsToExclude = [];
 	let podsToForward = [];
@@ -361,12 +389,38 @@ try {
 	timeLog(chalk.red(error));
 }
 
-process.on('exit', () => {
+const cleanup = () => {
+	let failedCount = 0;
 	runningPods.forEach((pod) => {
 		try {
 			pod.childProcess.kill();
+			timeLog(`[${pod.childProcess.pid}] ${chalk.green("Stopped")} port forwarding for ${chalk.cyan(pod.name)}`)
 		} catch (error) {
-
+			timeLog(chalk.red(error));
+			failedCount++;
 		}
 	})
+	if (failedCount > 0) {
+		timeLog("Failed to cleanly stop all port forwarding. Please clean them up manually.");
+	}
+}
+
+process.on('SIGHUP', () => {
+	timeLog(chalk.yellow('Received signal: SIGHUP'))
+	process.exit(1);
 });
+
+process.on('SIGINT', () => {
+	timeLog(chalk.yellow('Received signal: SIGINT'))
+	process.exit(2);
+});
+
+process.on('SIGTERM', () => {
+	timeLog(chalk.yellow('Received signal: SIGTERM'))
+	process.exit(15);
+});
+
+process.on('exit', () => {
+	cleanup();
+})
+
